@@ -1,0 +1,8 @@
+[package]
+name = "industria"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "simulate_solar"
+path = "src/main.rs"

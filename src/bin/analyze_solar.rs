@@ -4,10 +4,14 @@
 // each candidate battery size. A "battery day" stores enough energy to
 // run the entire base load for 24 hours.
 //
+// After the sweep, run a golden-section search over battery_days to find
+// the precise cost-minimum configuration (the inner gen_mult is found by
+// the same binary search the sweep uses). Reported on stderr.
+//
 // Usage:
 //   analyze_solar --base-load <W> --cost <file> --solar <csv> \
 //                 [--output pareto.csv] [--max-gen 10] \
-//                 [--max-battery-days 14] [--deficit-tolerance 0.0]
+//                 [--max-battery-days 14] [--supply-percent 100]
 
 use std::collections::HashMap;
 use std::env;
@@ -182,6 +186,89 @@ fn min_gen_for(
     Some(hi)
 }
 
+// Smallest battery_days in [0, max_days] that admits a feasible gen_mult,
+// found by bisection. Returns None if even max_days is infeasible.
+fn min_feasible_battery(
+    solar_w: &[f64],
+    base_load_w: f64,
+    max_gen: f64,
+    max_days: f64,
+    tol: f64,
+) -> Option<f64> {
+    if min_gen_for(solar_w, base_load_w, max_days, max_gen, tol).is_none() {
+        return None;
+    }
+    if min_gen_for(solar_w, base_load_w, 0.0, max_gen, tol).is_some() {
+        return Some(0.0);
+    }
+    let mut lo = 0.0_f64;
+    let mut hi = max_days;
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if min_gen_for(solar_w, base_load_w, mid, max_gen, tol).is_some() {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Some(hi)
+}
+
+// Golden-section search for the battery_days that minimises total cost,
+// on the assumption that cost(battery_days) is unimodal across the
+// feasible interval (matches the U-shape we observe in practice).
+fn find_cost_optimum(
+    solar_w: &[f64],
+    base_load_w: f64,
+    max_gen: f64,
+    max_days: f64,
+    tol: f64,
+    gen_cost: f64,
+    bat_cost: f64,
+) -> Option<(f64, f64, f64)> {
+    let bd_lo = min_feasible_battery(solar_w, base_load_w, max_gen, max_days, tol)?;
+    let cost_at = |bd: f64| -> Option<(f64, f64)> {
+        min_gen_for(solar_w, base_load_w, bd, max_gen, tol)
+            .map(|g| (g, gen_cost * g + bat_cost * bd))
+    };
+
+    let phi: f64 = (1.0 + 5.0_f64.sqrt()) / 2.0;
+    let resphi: f64 = 2.0 - phi; // 1 - 1/phi ≈ 0.382
+    let mut a = bd_lo;
+    let mut b = max_days;
+    if (b - a) < 1e-9 {
+        let (g, cost) = cost_at(a)?;
+        return Some((a, g, cost));
+    }
+    let mut c = a + resphi * (b - a);
+    let mut d = b - resphi * (b - a);
+    let mut fc = cost_at(c)?.1;
+    let mut fd = cost_at(d)?.1;
+
+    for _ in 0..60 {
+        if (b - a) < 1e-4 {
+            break;
+        }
+        if fc < fd {
+            b = d;
+            d = c;
+            fd = fc;
+            c = a + resphi * (b - a);
+            fc = cost_at(c)?.1;
+        } else {
+            a = c;
+            c = d;
+            fc = fd;
+            d = b - resphi * (b - a);
+            fd = cost_at(d)?.1;
+        }
+    }
+
+    let bd_star = 0.5 * (a + b);
+    let (g_star, cost_star) = cost_at(bd_star)?;
+    Some((bd_star, g_star, cost_star))
+}
+
 fn battery_grid(max_days: f64) -> Vec<f64> {
     // Geometric sweep from a quarter-day up to max, plus 0 for completeness.
     let mut grid = vec![0.0_f64];
@@ -248,6 +335,31 @@ fn run() -> Result<(), String> {
     }
 
     eprintln!("wrote {} pareto points to {}", wrote, args.out_path);
+
+    match find_cost_optimum(
+        &solar,
+        args.base_load_w,
+        args.max_gen,
+        args.max_battery_days,
+        deficit_tolerance,
+        gen_cost,
+        bat_cost,
+    ) {
+        Some((bd, g, cost)) => {
+            let unmet = simulate(&solar, args.base_load_w, g, bd);
+            eprintln!(
+                "cost-minimum: battery_days={:.4}, generation_multiple={:.4}, total_cost={:.2}, unmet_fraction={:.6}",
+                bd, g, cost, unmet
+            );
+        }
+        None => {
+            eprintln!(
+                "cost-minimum: no feasible configuration in [0, {}] battery_days at max_gen={}",
+                args.max_battery_days, args.max_gen
+            );
+        }
+    }
+
     Ok(())
 }
 

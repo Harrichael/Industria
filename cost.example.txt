@@ -1,0 +1,13 @@
+# Cost weights used by analyze_solar to score each Pareto point.
+# Format: key = value, one per line. Lines starting with # are ignored.
+#
+# generation_per_multiple: cost of 1.0x of the reference solar CSV
+#                          (i.e. installing the system that produced it).
+# battery_per_day:         cost of 1 day of full-grid storage
+#                          (battery sized to run base_load for 24 h).
+#
+# Units are arbitrary — pick $, €, or any consistent scalar; the analyzer
+# just multiplies and reports total_cost in the same units.
+
+generation_per_multiple = 1000.0
+battery_per_day = 500.0

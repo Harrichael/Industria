@@ -22,7 +22,7 @@ struct Args {
     out_path: String,
     max_gen: f64,
     max_battery_days: f64,
-    deficit_tolerance: f64,
+    supply_percent: f64,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -32,7 +32,7 @@ fn parse_args() -> Result<Args, String> {
     let mut out_path: String = "pareto.csv".into();
     let mut max_gen: f64 = 10.0;
     let mut max_battery_days: f64 = 14.0;
-    let mut deficit_tolerance: f64 = 0.0;
+    let mut supply_percent: f64 = 100.0;
 
     let mut it = env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -44,13 +44,19 @@ fn parse_args() -> Result<Args, String> {
             "--output" | "-o" => out_path = take(it.next())?,
             "--max-gen" => max_gen = take(it.next())?.parse().map_err(|e| format!("--max-gen: {e}"))?,
             "--max-battery-days" => max_battery_days = take(it.next())?.parse().map_err(|e| format!("--max-battery-days: {e}"))?,
-            "--deficit-tolerance" => deficit_tolerance = take(it.next())?.parse().map_err(|e| format!("--deficit-tolerance: {e}"))?,
+            "--supply-percent" => supply_percent = take(it.next())?.parse().map_err(|e| format!("--supply-percent: {e}"))?,
             "-h" | "--help" => {
                 print_usage();
                 std::process::exit(0);
             }
             other => return Err(format!("unknown arg: {other}")),
         }
+    }
+
+    if !(0.0 < supply_percent && supply_percent <= 100.0) {
+        return Err(format!(
+            "--supply-percent must be in (0, 100], got {supply_percent}"
+        ));
     }
 
     Ok(Args {
@@ -60,7 +66,7 @@ fn parse_args() -> Result<Args, String> {
         out_path,
         max_gen,
         max_battery_days,
-        deficit_tolerance,
+        supply_percent,
     })
 }
 
@@ -68,7 +74,10 @@ fn print_usage() {
     eprintln!(
         "Usage: analyze_solar --base-load <W> --cost <file> --solar <csv>\n\
          \x20             [--output pareto.csv] [--max-gen 10]\n\
-         \x20             [--max-battery-days 14] [--deficit-tolerance 0.0]"
+         \x20             [--max-battery-days 14] [--supply-percent 100]\n\
+         \n\
+         --supply-percent: percentage of grid demand the solar+battery system\n\
+         must cover (the remainder is assumed to come from another source)."
     );
 }
 
@@ -189,10 +198,12 @@ fn run() -> Result<(), String> {
     let args = parse_args()?;
     let cost = read_cost(&args.cost_path)?;
     let solar = read_solar(&args.solar_path)?;
+    let deficit_tolerance = 1.0 - args.supply_percent / 100.0;
     eprintln!(
-        "loaded {} hourly samples; base_load = {} W",
+        "loaded {} hourly samples; base_load = {} W; supply target = {}%",
         solar.len(),
-        args.base_load_w
+        args.base_load_w,
+        args.supply_percent
     );
 
     let gen_cost = cost["generation_per_multiple"];
@@ -214,7 +225,7 @@ fn run() -> Result<(), String> {
             args.base_load_w,
             bd,
             args.max_gen,
-            args.deficit_tolerance,
+            deficit_tolerance,
         ) {
             Some(g) => {
                 let total_cost = gen_cost * g + bat_cost * bd;
